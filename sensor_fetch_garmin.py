@@ -21,7 +21,8 @@ load_dotenv()
 def f_num(val, dec=0):
     if val is None or val == 'N/A': return 'N/A'
     try: return f"{float(val):.{dec}f}"
-    except: return val
+    except (TypeError, ValueError):
+        return val   # not a number (e.g. a label): show it as Garmin sent it
 
 # Helper to convert speed (m/s) to pace (min/km)
 def get_pace(speed_ms):

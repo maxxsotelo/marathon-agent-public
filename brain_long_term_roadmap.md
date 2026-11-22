@@ -53,3 +53,6 @@ Long-term milestones (brain_knowledge_base.md section 7): half marathon 1:40 →
 3. Is the current phase done? If yes, move on; if a criterion is slipping, say why.
 4. Re-read the full library summaries; check PRINCIPLES.md still holds.
 5. Write the verdict and the next 3–4 weeks in `brain_current_week_plan.py` and the session notes.
+6. Build the Monthly Yearbook issue in `reports/yearbook/YYYY-MM_monthly.pdf` with
+   `python scripts/build_achievement_pdf.py --mode monthly --month YYYY-MM` and mirror it to the
+   `Marathon Yearbook` folder on Google Drive.

@@ -46,7 +46,7 @@ part does, how data flows, the decisions behind the design, and what is still op
 | `brain_session_notes.md` | Handoff between sessions. |
 | `brain_decision_log.md` | Consults and overrides with outcomes (learns whether the athlete's feel or HRV predicts better). |
 | `brain_strength_records.md`, `brain_nutrition_log.md` | Manual logs (best sets; macros from screenshots). |
-| `knowledge_base/PRINCIPLES.md` | Research digest: 32 cited principles with evidence grades. |
+| `knowledge_base/PRINCIPLES.md` | Research digest: 42 cited principles with evidence grades. |
 | `knowledge_base/RESEARCH_LOG.md` | Every lookup with sources. |
 | `knowledge_base/*` (other) | Full library summaries, read at block planning. |
 | `archive/` | Retired files: old marathon plan, Jan 2026 operating manual, mid-year 2026 report. |

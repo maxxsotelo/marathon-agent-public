@@ -26,7 +26,8 @@ Rules 10-11). Every number comes from core_common.py.
              hard / MP session < 24 h: block; 24-48 h: CONSULT.
              heavy legs < 48 h after a long or hard run: CONSULT.
   Long run   heavy legs within 72 h before a planned long run: block.
-  Readiness  TRS < 50: Zone 2 cap (hard and MP blocked).
+  Readiness  TRS < 50: Zone 2 cap (hard and MP blocked). TRS unreadable today: hard and MP
+             blocked, easy sessions warned.
   Form       FBI < 70 on the last outdoor run: warning (shorten, add mobility).
   Lifting    > 12 hard sets for a muscle in 7 days, or no lifting-free day in
              the last 7: warning.
@@ -43,14 +44,14 @@ Usage:
 import argparse
 import json
 import os
+import re
 import sys
-from collections import defaultdict
 from datetime import date, datetime, time, timedelta
 
 os.environ.setdefault("PYTHONIOENCODING", "utf-8")
 
-from core_common import (ACWR_CAUTION, ACWR_VETO, PHT, acwr, activities_window, describe_hrv,
-                         hrv_status, is_run, last_hard_or_long, now_pht, readiness, run_km,
+from core_common import (ACWR_CAUTION, ACWR_VETO, LONG_RUN_KM, PHT, acwr, activities_window, describe_hrv,
+                         hrv_status, is_run, last_hard_or_long, now_pht, readiness,
                          today_pht, trimp)
 from garmin_auth import get_client
 
@@ -91,6 +92,24 @@ class Gate:
         return [m for lv, _, m in self.items if lv == level]
 
 
+LONG_RUN_PHRASE = re.compile(r"\blong[\s-]*run\b", re.I)
+LONG_RUN_TITLE = re.compile(r"\blong\b|\blr\b", re.I)   # Garmin calendar titles, e.g. "W21D6: Long Run 16K"
+
+
+def plan_day_is_long_run(entry: dict) -> bool:
+    """Is this week-plan day a long run?
+
+    The day's "gates" list decides when it exists (type "long_run"), plus run_km >= 16. Free text
+    is only read for a day without gates, and then as the phrase "long run": a note such as
+    "16K long run shifted to Sat" on a gated rest day must not block Thursday's leg day."""
+    if float(entry.get("run_km") or 0) >= LONG_RUN_KM:
+        return True
+    gates = entry.get("gates")
+    if gates:
+        return any(g.get("type") == "long_run" for g in gates)
+    return bool(LONG_RUN_PHRASE.search(f"{entry.get('label', '')} {entry.get('session', '')}"))
+
+
 def long_runs_planned(client, start: date, days: int) -> list[str]:
     """Long runs in brain_current_week_plan.py or on the Garmin calendar in [start, start+days]."""
     found = []
@@ -101,9 +120,8 @@ def long_runs_planned(client, start: date, days: int) -> list[str]:
                 dd = date.fromisoformat(d)
             except ValueError:
                 continue
-            text = f"{entry.get('label', '')} {entry.get('session', '')}".lower()
-            if start <= dd <= end and ("long" in text or (entry.get("run_km") or 0) >= 16):
-                found.append(f"{d} (week plan: {entry.get('session', '')[:50]})")
+            if start <= dd <= end and not entry.get("completed") and plan_day_is_long_run(entry):
+                found.append(f"{d} (week plan: {(entry.get('label') or entry.get('session', ''))[:50]})")
     months = {(start.year, start.month), (end.year, end.month)}
     for y, m in months:
         try:
@@ -118,7 +136,7 @@ def long_runs_planned(client, start: date, days: int) -> list[str]:
                 dd = date.fromisoformat(item.get("date", ""))
             except ValueError:
                 continue
-            if start <= dd <= end and ("long" in title.lower() or " lr" in f" {title.lower()}"):
+            if start <= dd <= end and LONG_RUN_TITLE.search(title):
                 found.append(f"{dd} (Garmin: {title})")
     return sorted(set(found))
 
@@ -201,14 +219,20 @@ def main():
     extra_trimp = trimp(args.duration, SESSION_HR[intensity])
     # Future date: the 7-day window ends on the session's date, so add the runs the week
     # plan has between today and then (as easy runs) on top of what Garmin already has.
+    # Today's planned run counts too while it has not been done yet (not marked completed and
+    # no run on Garmin today): otherwise planning tomorrow in the morning under-projects.
     planned_km = 0.0
     if future and plan:
+        ran_today = any(is_run(a) and (a.get("startTimeLocal") or "")[:10] == today.isoformat()
+                        for a in acts or [])
         for d, entry in plan.get("days", {}).items():
             try:
                 dd = date.fromisoformat(d)
             except ValueError:
                 continue
-            if today < dd < target and dd >= target - timedelta(days=6):
+            if dd == today and (entry.get("completed") or ran_today):
+                continue
+            if today <= dd < target and dd >= target - timedelta(days=6):
                 planned_km += float(entry.get("run_km") or 0)
     planned_trimp = trimp(planned_km * PACE_MIN_PER_KM["easy"], SESSION_HR["easy"])
     end = target if future else today
@@ -220,7 +244,7 @@ def main():
               f"(7 d {now_a['acute_km']} km vs {now_a['chronic_km_week']} km/wk)")
         if future:
             print(f"  on {target}: 7-day window {target - timedelta(days=6)} to {target}, incl. "
-                  f"{planned_km:.1f} km planned in the week plan before the session")
+                  f"{planned_km:.1f} km still planned in the week plan before the session")
         print(f"  with this session: mechanical {proj['mechanical']} | load {proj['load']} "
               f"-> gate {proj['gate']}")
         if proj["gate"] > ACWR_VETO:
@@ -290,6 +314,8 @@ def main():
         desc = (f"{h_since:.0f} h since a {last['kind']} run ({last['km']} km, TE {last['te']}, "
                 f"ended {last['end']:%a %b %d %H:%M})")
         print(f"  {desc}")
+        if last.get("merge_note"):
+            print(f"  [NOTE]    {last['merge_note']}")
         if hard or mp:
             if h_since < 24:
                 g.add("BLOCK", "recovery", f"Hard/MP session < 24 h after a {last['kind']} run.")
@@ -313,7 +339,10 @@ def main():
             g.add("INFO", "readiness", "Future date: TRS is checked that morning (PROVISIONAL).")
         else:
             r = readiness(client, target, acts=acts)
-            if r["trs"] is None:
+            if r["trs"] is None and (hard or mp):
+                g.add("BLOCK", "readiness", f"TRS unavailable {r['notes']}: hard and marathon-pace sessions "
+                                            "are blocked until readiness can be read (CLAUDE.md: Garmin unreadable).")
+            elif r["trs"] is None:
                 g.add("WARN", "readiness", f"TRS unavailable {r['notes']}")
             elif r["trs"] < TRS_ZONE2_CAP and (hard or mp):
                 g.add("BLOCK", "readiness", f"TRS {r['trs']} < {TRS_ZONE2_CAP}: Zone 2 cap today.")

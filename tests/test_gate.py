@@ -212,12 +212,74 @@ class TestLongRunAhead(unittest.TestCase):
         self.assertEqual(gate_exit(FakeGarmin(calendar=cal), "--type", "legs_heavy", "--duration", "50"), 1)
 
 
+    def test_long_run_is_read_from_gates_not_from_the_word_long(self):
+        # A gated rest day whose text mentions a long run that was moved must not block leg day
+        # (W21: "16K long run shifted to Sat night" on Sunday).
+        day = (TODAY + timedelta(days=2)).isoformat()
+        moved = {"meta": {"week": "test"}, "days": {day: {
+            "label": "Sunday | Boxing + Check-in", "run_km": 0.0,
+            "session": "Active recovery (16K long run shifted to Sat night); prolonged warm-up.",
+            "gates": [{"type": "easy_cardio", "duration": 40, "label": "Boxing"}]}}}
+        self.assertEqual(gate_exit(FakeGarmin(), "--type", "legs_heavy", "--duration", "50", plan=moved), 0)
+        gated = {"meta": {"week": "test"}, "days": {day: {
+            "label": "Sunday | LR", "session": "", "run_km": 14.0,
+            "gates": [{"type": "long_run", "duration": 80, "intensity": "easy"}]}}}
+        self.assertEqual(gate_exit(FakeGarmin(), "--type", "legs_heavy", "--duration", "50", plan=gated), 1)
+
+    def test_plan_day_is_long_run(self):
+        f = gate.plan_day_is_long_run
+        self.assertTrue(f({"label": "Sat", "session": "Long run 14K", "run_km": 14}))        # no gates: phrase
+        self.assertTrue(f({"label": "Sat", "session": "steady", "run_km": 18}))              # 16 km+
+        self.assertFalse(f({"label": "Tue | Leg Day A", "session": "along the river, prolonged", "run_km": 0}))
+        self.assertFalse(f({"label": "Sun", "session": "long run moved", "run_km": 0,
+                            "gates": [{"type": "upper_body", "duration": 20}]}))             # gates decide
+
+    def test_completed_long_run_does_not_block(self):
+        day = (TODAY + timedelta(days=1)).isoformat()
+        done = {"meta": {"week": "test"}, "days": {day: {"label": "Long Run 16K", "session": "", "run_km": 16.5,
+                                                         "completed": True}}}
+        self.assertEqual(gate_exit(FakeGarmin(), "--type", "legs_heavy", "--duration", "50", plan=done), 0)
+
+
+class TestPlannedKmToday(unittest.TestCase):
+    """Scheduling tomorrow before today's run is done: today's planned km must be projected."""
+
+    def plan(self, **today_fields):
+        return {"meta": {"week": "test"}, "days": {TODAY.isoformat(): {"label": "", "session": "",
+                                                                       "run_km": 30, **today_fields}}}
+
+    def setUp(self):
+        # history ends 26 h ago, so nothing was run "today" whatever the clock says
+        self.acts = [a for a in steady_history() if a["startTimeLocal"][:10] != TODAY.isoformat()]
+        self.tomorrow = (TODAY + timedelta(days=1)).isoformat()
+
+    def test_unfinished_run_today_is_counted(self):
+        c = FakeGarmin(acts=self.acts)
+        self.assertEqual(gate_exit(c, "--type", "easy", "--duration", "60", "--date", self.tomorrow), 0)
+        self.assertEqual(gate_exit(c, "--type", "easy", "--duration", "60", "--date", self.tomorrow,
+                                   plan=self.plan()), 1)
+
+    def test_completed_day_is_not_counted_twice(self):
+        c = FakeGarmin(acts=self.acts)
+        self.assertEqual(gate_exit(c, "--type", "easy", "--duration", "60", "--date", self.tomorrow,
+                                   plan=self.plan(completed=True)), 0)
+
+
 class TestReadinessAndFuture(unittest.TestCase):
     def test_trs_below_50_caps_at_zone2(self):
         c = FakeGarmin()
         self.assertEqual(gate_exit(c, "--type", "tempo", "--duration", "50", "--intensity", "threshold",
                                    trs=40.0), 1)
         self.assertEqual(gate_exit(c, "--type", "easy", "--duration", "45", trs=40.0), 0)
+
+    def test_unreadable_trs_blocks_hard_only(self):
+        c = FakeGarmin()
+        self.assertEqual(gate_exit(c, "--type", "tempo", "--duration", "50", "--intensity", "threshold",
+                                   trs=None), 1)
+        self.assertEqual(gate_exit(c, "--type", "easy", "--duration", "45", "--intensity", "marathon",
+                                   "--mp-minutes", "15", trs=None), 1)
+        self.assertEqual(gate_exit(c, "--type", "easy", "--duration", "45", trs=None), 0)
+        self.assertEqual(gate_exit(c, "--type", "long_run", "--duration", "95", trs=None), 0)
 
     def test_future_date_is_provisional(self):
         c = FakeGarmin(last_night=95, weekly=100)    # today's low HRV must not judge a future day

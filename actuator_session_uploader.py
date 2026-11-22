@@ -24,7 +24,14 @@ Spec (strength):
         {"exercise": "LAT_PULLDOWN", "sets": 4, "reps": 5, "weight": "auto"},
         {"exercise": "PULL_UP/LAT_PULLDOWN", "sets": 3, "reps": 8, "weight": 60, "rest": 120,
          "note": "wide grip"},
-        {"exercise": "single_leg_rdl", "sets": 2, "reps": 8, "weight": 16, "per_side": true}]}
+        {"exercise": "single_leg_rdl", "sets": 2, "reps": 8, "weight": 16, "per_side": true},
+        {"superset": [{"exercise": "seated_lateral_raise", "reps": 12, "weight": 12.5},
+                      {"exercise": "db_hammer_curl", "reps": 10, "weight": 15}],
+         "sets": 3, "rest": 75},
+        {"exercise": "side_plank", "sets": 2, "secs": 30, "per_side": true}]}
+    A "superset" runs its members back to back for "sets" rounds ("switch" seconds between
+    members, default 15; "rest" after each round, "auto" = the longest Rule 10 rest of the
+    members). "secs" instead of "reps" makes a timed hold.
 
 Spec (cardio, e.g. SkiErg; or run, e.g. treadmill: time-based with belt speeds in the notes):
     {"name": "...", "date": "...", "sport": "cardio" | "run", "gate": {"type": "hiit", "duration": 25},
@@ -34,6 +41,9 @@ Spec (cardio, e.g. SkiErg; or run, e.g. treadmill: time-based with belt speeds i
                {"kind": "cooldown", "secs": 300}]}
     Run steps may use "meters" instead of "secs" (outdoor only: the watch under-reads
     treadmill distance, so treadmill steps must be time-based).
+    Short efforts (surges, strides: up to 2 min or 400 m) get no HR target even if "hr" is given:
+    heart rate lags 30-60 s, so the watch would beep "too low" for most of the step and push the
+    pace up to chase it. The range moves into the step note; run them by feel.
 """
 
 import argparse
@@ -59,6 +69,7 @@ NO_TARGET = {"workoutTargetTypeId": 1, "workoutTargetTypeKey": "no.target", "dis
 HR_TARGET = {"workoutTargetTypeId": 4, "workoutTargetTypeKey": "heart.rate.zone", "displayOrder": 4}
 
 REST_HEAVY, REST_HARD, REST_LIGHT = 150, 120, 75   # Rule 10 rest periods (seconds)
+SHORT_STEP_SECS, SHORT_STEP_METERS = 120, 400       # no HR target on efforts this short (HR lags)
 
 
 def resolve_exercise(ref: str) -> tuple[str, str | None]:
@@ -114,37 +125,72 @@ def build_strength(spec, client) -> list:
     if spec.get("warmup"):
         w = spec["warmup"]
         out.append(st.exec_step("warmup", w.get("note", "Warm-up"), TIME, w.get("secs", 300)))
-    targets = None
-    for ex in spec["exercises"]:
+    targets = {}
+
+    def resolve(ex):
         cat, name = resolve_exercise(ex["exercise"])
         weight = ex.get("weight")
         if weight == "auto":
-            if targets is None:
+            if not targets:
                 from core_strength_progression import fetch_sessions, next_target
                 from core_common import today_pht
                 hist = fetch_sessions(client, 180)
-                targets = {n: next_target(s, today_pht()) for n, s in hist.items()}
+                targets.update({n: next_target(s, today_pht()) for n, s in hist.items()})
             key = name or cat
             if key not in targets or not targets[key][1]:
                 raise SystemExit(f"[UPLOADER] No Garmin history for {key}: give an explicit weight.")
             weight = targets[key][1]
             print(f"  auto weight {key}: {targets[key][0]}")
-        rest = ex.get("rest", "auto")
-        rest = auto_rest(cat, name) if rest == "auto" else int(rest)
-        sets, reps = int(ex["sets"]), int(ex["reps"])
+        return cat, name, weight
+
+    def one_set(ex, cat, name, weight, i, sets):
+        """One set of one exercise (both sides if per_side): reps, or a timed hold with "secs"."""
         label = ex.get("note") or (name or cat).replace("_", " ").title()
         sides = ["Left", "Right"] if ex.get("per_side") else [None]
+        for side in sides:
+            extra = {"category": cat, "exerciseName": name}
+            if weight:
+                extra.update({"weightValue": float(weight), "weightUnit": KG_UNIT})
+            desc = f"{label} - Set {i}/{sets}" + (f" {side}" if side else "")
+            if ex.get("secs"):
+                out.append(st.exec_step("interval", desc, TIME, int(ex["secs"]), extra=extra))
+            else:
+                out.append(st.exec_step("interval", desc, REPS, int(ex["reps"]), extra=extra))
+            if side == "Left":
+                out.append(st.exec_step("rest", "Switch sides", TIME, 30))
+
+    for ex in spec["exercises"]:
+        if "superset" in ex:
+            # Rounds of A, B (, C) back to back; "rest" after each round (Rule 10 rest of the
+            # heaviest member when "auto"), "switch" seconds between members (default 15).
+            members = [(m, *resolve(m)) for m in ex["superset"]]
+            rounds = int(ex["sets"])
+            rest = ex.get("rest", "auto")
+            rest = max(auto_rest(c, n) for _, c, n, _ in members) if rest == "auto" else int(rest)
+            switch = int(ex.get("switch", 15))
+            for i in range(1, rounds + 1):
+                for j, (m, cat, name, weight) in enumerate(members):
+                    one_set(m, cat, name, weight, i, rounds)
+                    if j < len(members) - 1 and switch:
+                        out.append(st.exec_step("rest", "Next exercise", TIME, switch))
+                out.append(st.exec_step("rest", f"Rest {rest}s (end of round {i}/{rounds})", TIME, rest))
+            continue
+        cat, name, weight = resolve(ex)
+        rest = ex.get("rest", "auto")
+        rest = auto_rest(cat, name) if rest == "auto" else int(rest)
+        sets = int(ex["sets"])
         for i in range(1, sets + 1):
-            for side in sides:
-                extra = {"category": cat, "exerciseName": name}
-                if weight:
-                    extra.update({"weightValue": float(weight), "weightUnit": KG_UNIT})
-                desc = f"{label} - Set {i}/{sets}" + (f" {side}" if side else "")
-                out.append(st.exec_step("interval", desc, REPS, reps, extra=extra))
-                if side == "Left":
-                    out.append(st.exec_step("rest", "Switch sides", TIME, 30))
+            one_set(ex, cat, name, weight, i, sets)
             out.append(st.exec_step("rest", f"Rest {rest}s", TIME, rest))
     return out
+
+
+def is_short_effort(kind, end, value) -> bool:
+    """A surge or stride: an interval step of up to 2 min or 400 m."""
+    if kind != "interval":
+        return False
+    limit = SHORT_STEP_METERS if end is DIST else SHORT_STEP_SECS
+    return float(value) <= limit
 
 
 def build_timed(spec, sport) -> list:
@@ -164,7 +210,11 @@ def build_timed(spec, sport) -> list:
         else:
             end, val = TIME, step["secs"]
         extra = {"category": "CARDIO", "exerciseName": step.get("exercise")} if sport == "cardio" else None
-        return st.exec_step(kind, step.get("note", kind.title()), end, val, target=step.get("hr"), extra=extra)
+        note, target = step.get("note", kind.title()), step.get("hr")
+        if target and is_short_effort(kind, end, val):
+            note = f"{note} (No HR target: HR lags on efforts this short. Go by feel; HR {target[0]:g}-{target[1]:g} by the end is fine.)"
+            target = None
+        return st.exec_step(kind, note, end, val, target=target, extra=extra)
 
     return [one(s) for s in spec["steps"]]
 

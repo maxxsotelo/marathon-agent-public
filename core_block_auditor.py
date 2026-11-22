@@ -1,6 +1,6 @@
 import os
 from datetime import date, timedelta, datetime
-from core_common import today_pht
+from core_common import merge_split_runs, run_km, is_run, today_pht
 from dotenv import load_dotenv
 from garmin_auth import get_client
 from core_physiological_engine import RUN_TYPE_KEYS
@@ -42,8 +42,6 @@ def parse_week(activities):
             if avg_hr > 0:
                 data['hr_sum'] += avg_hr
                 data['hr_count'] += 1
-            if dist_km > data['longest_run']:
-                data['longest_run'] = dist_km
                 
         elif act_type == 'walking':
             data['walk_dist'] += dist_km
@@ -58,6 +56,8 @@ def parse_week(activities):
             if dur_sec >= 900:
                 data['strength_count'] += 1
             
+    # Longest run counts a split run (outdoor + treadmill, same day) as one run
+    data['longest_run'] = max((run_km(a) for a in merge_split_runs(activities) if is_run(a)), default=0.0)
     return data
 
 def format_time(seconds):

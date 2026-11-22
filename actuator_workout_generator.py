@@ -7,11 +7,12 @@ to the athlete's Garmin Connect calendar.
 Athlete Profile (from archive/operating_manual.md — LTHR Method, Updated June 6 2026):
     - Max HR: 206 bpm
     - LTHR: ~191 bpm | RHR: 39 bpm
-    - Zone 1 (Easy Aerobic):   < 162 bpm      (< 85% LTHR) — all easy/long runs
-    - Zone 2 (Extensive):      162 – 174 bpm  (85–91% LTHR)
-    - Zone 3 (Tempo):          174 – 181 bpm  (91–95% LTHR)
-    - Zone 4 (Threshold):      181 – 191 bpm  (95–100% LTHR)
-    - Zone 5 (VO2 the athlete):        > 191 bpm      (> 100% LTHR)
+    - Zone 1 (Easy Aerobic):   < 162 bpm      (< 85% LTHR) — recovery runs (KB Rule 9)
+    - Zone 2 (Extensive):      162 – 174 bpm  (85–91% LTHR) — default for easy and long runs (Rule 9)
+    - Zone 3 (Tempo):          175 – 181 bpm  (91–95% LTHR)
+    - Zone 4 (Threshold):      182 – 191 bpm  (95–100% LTHR)
+    - Zone 5 (VO2 the athlete):        192+ bpm       (> 100% LTHR)
+    Zone boundaries match CLAUDE.md / core_scorecard.py ZONES.
     - MAF Cross-check ceiling: 155 bpm (conservative floor for pure aerobic)
     - Easy Cadence:            Self-select (~163–170 spm at easy pace)
     - Speed Cadence:           175–182+ spm at tempo/threshold
@@ -54,9 +55,9 @@ load_dotenv()
 HR_ZONES = {
     1: {"name": "Easy Aerobic",  "low": 130, "high": 161},  # <162 bpm — all easy/long runs
     2: {"name": "Extensive",     "low": 162, "high": 174},  # 85-91% LTHR
-    3: {"name": "Tempo",         "low": 174, "high": 181},  # 91-95% LTHR
-    4: {"name": "Threshold",     "low": 181, "high": 191},  # 95-100% LTHR
-    5: {"name": "VO2 the athlete",       "low": 191, "high": 206},  # >100% LTHR
+    3: {"name": "Tempo",         "low": 175, "high": 181},  # 91-95% LTHR
+    4: {"name": "Threshold",     "low": 182, "high": 191},  # 95-100% LTHR
+    5: {"name": "VO2 the athlete",       "low": 192, "high": 206},  # >100% LTHR
 }
 
 MAX_HR   = 206
@@ -99,10 +100,10 @@ def _hr_target_type() -> dict:
     """Return the targetType identifier dict for custom absolute BPM targets.
     'heart.rate.zone' with explicit BPM values and no zoneNumber makes Garmin
     use our exact BPM range rather than its own miscalibrated zone table.
-    (garminconnect>=0.3 has no TargetType.HEART_RATE.)
+    Handles both TargetType.HEART_RATE_ZONE (0.3.0/0.3.1) and TargetType.HEART_RATE (0.3.2+).
     """
     return {
-        "workoutTargetTypeId": TargetType.HEART_RATE_ZONE,
+        "workoutTargetTypeId": getattr(TargetType, "HEART_RATE_ZONE", getattr(TargetType, "HEART_RATE", 4)),
         "workoutTargetTypeKey": "heart.rate.zone",
         "displayOrder": 4,
     }
@@ -124,22 +125,56 @@ def _hr_target_values(zone: int) -> dict:
 def _pace_target_type() -> dict:
     """Return the targetType identifier dict for speed/pace targets."""
     return {
-        "workoutTargetTypeId": TargetType.SPEED_ZONE,
+        "workoutTargetTypeId": getattr(TargetType, "SPEED_ZONE", getattr(TargetType, "SPEED", 5)),
         "workoutTargetTypeKey": "speed.zone",
         "displayOrder": 5,
     }
 
 
-def _pace_target_values(intensity: str) -> dict:
-    """
-    Return the extra kwargs (targetValueOne, targetValueTwo) that must
-    be set directly on ExecutableStep for pace/speed targets.
-    """
-    p = PACE_BENCHMARKS[intensity]
-    return {
-        "targetValueOne": p["low"],
-        "targetValueTwo": p["high"],
-    }
+# ── Learned pace bands (T12a / T12b) ──────────────────────────────────
+# Runs carry HR targets only unless learned pace bands are passed in. The stale fixed
+# benchmarks above (PACE_BENCHMARKS) are reference only: they never become a target (T12a).
+# scripts/learn_weekly.py writes data/pace_bands.json each Sunday from the athlete's own HR-speed
+# data (P34); create_workout(..., pace_bands=load_pace_bands()) adds them as a secondary target.
+PACE_BANDS_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data", "pace_bands.json")
+PACE_BANDS_MAX_AGE_DAYS = 14
+_BAND_FOR_INTENSITY = {"easy": "easy", "marathon": "marathon", "threshold": "threshold"}   # recovery, vo2max: HR only
+_ACTIVE_PACE_BANDS = None   # set by create_workout() while it builds the steps
+
+
+def load_pace_bands(path: str = PACE_BANDS_FILE, today=None):
+    """{"easy": (fast_s_per_km, slow_s_per_km), ...} from data/pace_bands.json, or None when the
+    file is missing, unreadable or older than PACE_BANDS_MAX_AGE_DAYS (then: HR only)."""
+    import json
+    from datetime import date as _date
+    try:
+        with open(path, encoding="utf-8") as fh:
+            data = json.load(fh)
+        made = _date.fromisoformat(str(data["generated"])[:10])
+    except (OSError, ValueError, KeyError, TypeError):
+        return None
+    today = today or today_pht()
+    if (today - made).days > PACE_BANDS_MAX_AGE_DAYS:
+        return None
+    bands = {}
+    for key, band in (data.get("bands") or {}).items():
+        try:
+            fast, slow = float(band["fast_s_per_km"]), float(band["slow_s_per_km"])
+        except (KeyError, TypeError, ValueError):
+            continue
+        if 120 <= fast < slow <= 600:
+            bands[key] = (fast, slow)
+    return bands or None
+
+
+def _pace_band_values(intensity: str):
+    """Secondary speed target (m/s) for this intensity from the active learned bands, or None."""
+    key = _BAND_FOR_INTENSITY.get(intensity or "")
+    band = (_ACTIVE_PACE_BANDS or {}).get(key) if key else None
+    if not band:
+        return None
+    fast_s, slow_s = band
+    return {"targetValueOne": round(1000.0 / slow_s, 3), "targetValueTwo": round(1000.0 / fast_s, 3)}
 
 
 def _no_target_type() -> dict:
@@ -194,9 +229,9 @@ def _build_step(step_key: str, duration_secs: float, step_order: int,
         "targetValueTwo": hr_vals["targetValueTwo"],
     }
 
-    # Add pace as secondary target if specified
-    if pace_intensity:
-        pv = _pace_target_values(pace_intensity)
+    # Secondary pace target only from learned bands (T12a: never the stale fixed benchmarks)
+    pv = _pace_band_values(pace_intensity) if pace_intensity else None
+    if pv:
         kwargs["secondaryTargetType"] = _pace_target_type()
         kwargs["secondaryTargetValueOne"] = pv["targetValueOne"]
         kwargs["secondaryTargetValueTwo"] = pv["targetValueTwo"]
@@ -232,6 +267,23 @@ def _make_cooldown(duration_secs: float, step_order: int, zone: int = 1,
 # CORE: create_workout()
 # ──────────────────────────────────────────────────────────────────────
 def create_workout(
+    workout_type: str,
+    duration_mins: int,
+    intensity: str = "easy",
+    sport: str = "run",
+    pace_bands=None,
+):
+    """Build the workout. pace_bands=None (default): HR targets only (T12a). With learned bands
+    ({"easy": (fast_s, slow_s), ...}, from load_pace_bands()) runs also get a secondary pace target."""
+    global _ACTIVE_PACE_BANDS
+    _ACTIVE_PACE_BANDS = pace_bands if sport != "bike" else None
+    try:
+        return _create_workout(workout_type, duration_mins, intensity, sport)
+    finally:
+        _ACTIVE_PACE_BANDS = None
+
+
+def _create_workout(
     workout_type: str,
     duration_mins: int,
     intensity: str = "easy",
@@ -638,7 +690,7 @@ def create_and_schedule(
         Contains 'workout' (the RunningWorkout object),
         'upload_result', and 'schedule_result'.
     """
-    workout = create_workout(workout_type, duration_mins, intensity)
+    workout = create_workout(workout_type, duration_mins, intensity, pace_bands=load_pace_bands())
     upload_result = upload_workout(workout)
     workout_id = upload_result.get("workoutId")
     schedule_result = schedule_workout(workout_id, target_date)
@@ -751,7 +803,9 @@ if __name__ == "__main__":
                 print("[GATE] Pre-schedule check CLEARED. Proceeding with upload.\n")
     # ── END GATE ────────────────────────────────────────────────────────────
 
-    workout = create_workout(args.type, args.duration, args.intensity, args.sport)
+    bands = load_pace_bands() if args.sport != "bike" else None
+    print("[PACE] Learned pace bands (data/pace_bands.json): " + (", ".join(f"{k} {int(f)//60}:{int(f)%60:02d}-{int(sl)//60}:{int(sl)%60:02d}/km" for k, (f, sl) in bands.items()) if bands else "none fresh: HR targets only"))
+    workout = create_workout(args.type, args.duration, args.intensity, args.sport, pace_bands=bands)
 
     if args.upload:
         result = upload_workout(workout)
