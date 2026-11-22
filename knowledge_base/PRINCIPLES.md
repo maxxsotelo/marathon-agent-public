@@ -79,6 +79,11 @@ is noted so it's a known choice, not drift.
   rule (strength + width, not mass).
 - **P23. Lift after running on the same day; no heavy lifting the day before a long run.** B.
   `upper_body_strength_for_runners.md`.
+- **P33. Frequency is a free choice when weekly sets are equal; short, frequent sessions and
+  supersets save time.** B. Volume-matched, 1–3 (even 6) sessions/week per muscle give similar
+  strength and size (Schoenfeld 2019, Saric 2019). Supersets of non-competing muscles roughly halve
+  session time at similar volume (Iversen 2021), better proven for size than max strength, so keep
+  the heavy main lift with its full rest and superset only around it. Drives the athlete's short daily lifts (the athlete uses straight sets, not supersets: busy gym, his preference).
 - **P24. Hips, feet and mobility (big toe, ankle, hip) are the runner's "chassis".** C.
   `Running_rewired`.
 - *Conflict:* the library caps lifting at 2–3×/week. The athlete lifts near-daily as a split
@@ -104,6 +109,37 @@ is noted so it's a known choice, not drift.
   trend over single nights.** A. Drives Rule 11 (option B).
 - **P32. Track progress by pace at a fixed HR, not pace alone.** B.
   `speed_and_endurance_development.md` §6. Drives `core_progress_tracker.py`.
+- **P34. Pace targets follow his recent heart-rate–speed relationship, not a fixed season.** Speed at a given HR is a valid adaptation marker; recompute weekly from a recency-weighted window (half-life ~3 weeks), corrected for heat and hills, and keep session RPE (Garmin perceived effort × minutes) beside TRIMP as a second load signal. B. (RESEARCH_LOG 2026-11-21)
+- **P35. Doubles add easy volume; they do not replace the long run.** AM/PM runs count as two easy runs. A same-day split within 90 minutes keeps most of the long-run stimulus and counts as one run. C (coaching consensus; RESEARCH_LOG 2026-11-21)
+- **P36. Surge-and-float is the athlete's default long-run format (the athlete, Nov 21: it is what gets the long run done).** Floats clear
+  lactate best at easy-steady effort; intervals are rated more enjoyable than steady running for many people and variety
+  helps adherence (B); no study shows the format is better or worse than a steady long run for the marathon (C), and the
+  long run that gets done beats the one that gets skipped. On Nov 21 the floats got ~12 s/km faster (grade-adjusted) at
+  the same HR late in the run: a durability sign. Use: counts as a quality session (P15); surges ~7/10, floats HR <= 165,
+  fewer surges on low-HRV/symptom days and in recovery weeks (P6). As long runs grow past ~20 km, keep the surges in the
+  first two thirds and run the last 3-5 km continuous (marathon rehearsal). The athlete's Rule 5 (fast-finish long run every
+  2-3 weeks) runs inside the format: surges early, the last 3-5 km at marathon effort. RESEARCH_LOG 2026-11-21.
+- **P37. Sleep is the cheapest recovery lever: 7+ h, and protect the night before key sessions.** Sleep extension is the
+  best-supported recovery intervention; chronic short sleep is linked to injury (observational). Evening runs are fine;
+  avoid only vigorous work ending within ~1 h of bed. B. Drives the morning check's 7-night sleep line. RESEARCH_LOG 2026-11-22.
+- **P38. Fuel the run day, carbs first.** Low carbohydrate availability, not only low energy, drives REDs effects; eat back
+  the run (EA 40-45 on training days, a real meal within ~2 h of a long or hard run), carbs 5-7 g/kg on run days before
+  adding protein beyond ~1.8 g/kg. Judge by weekly EA averages, not one day. A/B. Drives the "kcal to EA 45" lines.
+- **P39. Lifting dose: enough to progress, not as much as possible.** Strength and running economy need modest volume
+  (heavy 2x/week for legs); beyond ~10-20 hard sets per muscle per week returns diminish while recovery cost does not.
+  Keep 1 day a week free of both lifting and hard running when life allows (monotony/strain). B/C.
+- **P40. For the marathon, weekly volume is the lever.** Mean weekly km over 8 weeks predicts marathon time better than
+  VO2max-based predictions for recreational runners (Tanda): build easy volume slowly (P4, P5) before chasing speed. B.
+- **P41. Coach the athlete he is: he overdoes, he doesn't skip.** The plan is the ceiling, with a stated bonus cap per key
+  session; PR attempts go into planned benchmarks (every 4-6 weeks), not long runs; rewards and badges track process
+  (sessions within caps, 7 h nights, fuelled days), and change every few weeks because novelty fades; check in weekly
+  with two numbers (enjoyment, life stress), never daily. B/C (behaviour-change research + his own logs).
+- **P42. Boredom limits volume: make easy kilometres interesting, not faster.** Running faster saves little time
+  (28 s/km over 17 km is about 8 minutes) and turns easy or long runs into quality sessions; fitness is what shortens a
+  run at the same effort (P32). Easy runs by time (long runs stay in km, P8); stories on easy runs and music for surges
+  and quality (music lowers perceived effort and lifts mood, A; temptation bundling, B); one new thing a week (variety,
+  B); a short second run instead of a longer single when adding volume (P35); groups at talking pace (B). B/C.
+  RESEARCH_LOG 2026-11-22 (boredom).
 
 ---
 

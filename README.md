@@ -8,7 +8,8 @@ call, it stops and asks me, with the data, the trade-offs and the research.
 [![Python](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org)
 [![Garmin Connect](https://img.shields.io/badge/Garmin-Connect-brightgreen.svg)](https://connect.garmin.com)
 [![Agent](https://img.shields.io/badge/agent-Claude%20Code-orange.svg)](https://claude.ai/code)
-[![Tests](https://img.shields.io/badge/gate%20tests-20%20passing-success.svg)](tests/test_gate.py)
+[![Tests](https://img.shields.io/badge/tests-passing-success.svg)](tests/)
+[![Models](https://img.shields.io/badge/personal%20models-retrained%20weekly-informational.svg)](scripts/learn_weekly.py)
 
 ---
 
@@ -35,6 +36,9 @@ what I've already done.
 - **Weekly and monthly:** checks the plan against training research (80/20 intensity, safe
   volume increases, single-run spikes), tracks whether I'm improving or on a plateau, and
   proposes what to change.
+- **Every Sunday it learns:** three small models retrain on my own data. They learn what heat and
+  hills cost me, the pace I actually run at each heart rate, and where my plans slip. They
+  suggest; they never override a safety limit.
 
 ## How it works
 
@@ -43,8 +47,9 @@ graph TD
     W[Garmin watch] -->|sync| G(Garmin Connect)
     G -->|HRV, sleep, activities, lifting sets| S[Sensors]
     S --> E[Engines: readiness, load, recovery, progression, progress]
-    E --> C{Claude Code coach<br/>rules: CLAUDE.md}
-    R[Research digest<br/>32 cited principles] --> C
+    E --> C{Coach agents<br/>Gemini daily, Claude backup<br/>rules: CLAUDE.md}
+    R[Research digest<br/>42 cited principles] --> C
+    S --> L[Training ledger] --> P[Personal models<br/>retrained weekly] --> C
     H[Athlete history<br/>generated ledger] --> C
     C -->|proposed session| GATE[Safety gate]
     GATE -->|cleared| U[Uploaders] -->|structured workout| G
@@ -75,12 +80,27 @@ If Garmin data is missing, hard sessions are blocked and easy ones still clear: 
   milestone or setting a pace. An earlier version kept "forgetting" I'd already run two 30 km
   runs; that can't happen now.
 - **Evidence-graded research instead of googling.** Training books and papers are distilled
-  into `knowledge_base/PRINCIPLES.md`: 32 principles, each with its source, an evidence grade
+  into `knowledge_base/PRINCIPLES.md`: 42 principles, each with its source, an evidence grade
   and the rule it drives. Key numbers were spot-checked against the original papers, and the
   ones that couldn't be confirmed are flagged. Every new lookup is logged with citations.
-- **One agent, one rulebook.** I retired a second LLM coach (Gemini) after the two drifted
-  apart, and folded the useful rules into code. A lifting "sub-agent" was considered and
-  rejected in favour of a deterministic progression engine.
+- **Two agents, one rulebook.** An early version had two LLM coaches that drifted apart. Now
+  Gemini (in Antigravity) runs the daily loop, and Claude Code builds the bigger systems and
+  takes over when the daily agent can't finish a task. Both read the same `CLAUDE.md` and pass
+  the same coded gate, so neither can talk its way past a limit.
+- **It learns, carefully.** A training ledger (`scripts/ledger.py`: every activity with my
+  post-run effort rating, daily vitals, plan against what I actually did) feeds three models
+  retrained every Sunday (`scripts/learn_weekly.py`):
+  - efficiency: what heat and hills cost me;
+  - pace: heart rate to pace, recent runs weighted most, moving at most 5 s/km a week, and only
+    for zones I have actually run;
+  - habits: where planned sessions slip.
+
+  They are plain numpy weighted least squares and logistic regression, and every effect comes
+  with a standard error, so a model says "not clear yet" instead of guessing. Models suggest;
+  the gate still decides.
+- **Reviews any model can rerun.** `scripts/telemetry_review.py` writes a deterministic packet
+  of my telemetry and history. Claude and Gemini each review it independently, then critique
+  each other's review.
 - **Headless and secure.** Token-only Garmin login (`garmin_auth.py`): no password, never an
   interactive prompt, clear errors when the token needs renewing. All times are anchored to
   Philippine time; the cloud container runs on UTC, which had silently shifted "today".
@@ -92,18 +112,24 @@ If Garmin data is missing, hard sessions are blocked and easy ones still clear: 
 
 ## What it has found so far (my own data)
 
-- Easy-run pace at the same heart rate (150 bpm) improved from about **6:20/km** (Jan–Jun 2026)
-  to **5:14/km** (Oct 2026), and VO2max rose from 54 to 59.7.
-- The tracker also showed *why* the speed had stalled: only **2%** of my recent running time
-  was at hard effort, against a research target of up to 20%. The roadmap now adds it.
+- Pace at the same heart rate (150 bpm) improved from **7:08/km** (Nov 2025) to **5:13/km**
+  (Nov 2026), and VO2max rose from 51.2 to 60.6. A 10 km run at that heart rate now takes
+  19 minutes less.
+- The efficiency model, fitted on 166 steady runs, puts the cost of heat at about **2.5 s/km per
+  +1 °C** of heat index. With heat and hills removed, I'm getting about **7 s/km faster a month**.
+- The bottleneck is volume, not speed: about 43 km a week for a year. A volume-based marathon
+  model (Tanda 2011) predicts about 3:32, against Garmin's VO2max-based 3:15.
+- My failure mode is doing more, not less: 0 of 31 planned runs skipped. So the plan is a
+  ceiling with a stated bonus cap, and the habit model never raises a plan to match an overrun.
 - The watch under-reads treadmill cadence by 6–10 steps/min (a wrist-sensor artefact,
   confirmed against a biomechanics meta-analysis), so cadence trends use outdoor runs only.
 
 ## Tech
 
-Python · [garminconnect](https://github.com/cyberjunky/python-garminconnect) (Garmin Connect
-API) · Claude Code (agent, cloud sessions, scheduled routines) · unittest · Markdown as the
-agent's memory, all versioned in git.
+Python · numpy · [garminconnect](https://github.com/cyberjunky/python-garminconnect) (Garmin Connect
+API) · Claude Code (systems, fail-safe, interactive dashboards) · Gemini in Antigravity (daily agent) ·
+GitHub Actions (the no-AI morning check and the weekly retrain) · unittest · Markdown as the agents'
+memory, all versioned in git.
 
 ## Repository map
 
@@ -113,6 +139,8 @@ agent's memory, all versioned in git.
 | Sensors | `sensor_fetch_garmin.py`, `sensor_pre_schedule_check.py` (the gate), `sensor_nutrition_audit.py` |
 | Engines | `core_common.py`, `core_physiological_engine.py`, `core_progress_tracker.py`, `core_plan_checks.py`, `core_strength_progression.py`, `core_run_analysis.py`, `core_block_auditor.py` |
 | Actuators | `actuator_workout_generator.py` (runs, bike), `actuator_session_uploader.py` (lifting, cardio, treadmill) |
+| Learning | `scripts/ledger.py` (training ledger), `scripts/learn_weekly.py` (Sunday retrain), `scripts/efficiency_model.py`, `scripts/pace_model.py`, `scripts/habit_model.py`, `scripts/model_utils.py` |
+| Reviews | `scripts/telemetry_review.py` (the rerunnable telemetry packet), `core_run_card.py` (the after-run card) |
 | Research | `knowledge_base/PRINCIPLES.md`, `knowledge_base/RESEARCH_LOG.md`, book and paper summaries |
 | Design | [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md): full map, loops, decisions and open items |
 
@@ -121,9 +149,12 @@ agent's memory, all versioned in git.
 1. **ETL pipeline:** Garmin metrics into Google Sheets. Passive: it showed data, it didn't decide.
 2. **Rules engine + LLM briefing:** the Kiat Engine plus a Gemini daily briefing. Useful, but
    the LLM's athlete profile went stale and two "coaches" started to disagree.
-3. **Single agent with a gate (now):** one Claude Code agent with a written rulebook, a tested
+3. **Single agent with a gate:** one Claude Code agent with a written rulebook, a tested
    safety gate, consults for judgement calls, a generated training history and a research
-   digest. It runs every morning in the cloud.
+   digest.
+4. **Two agents and a learning layer (now):** Gemini runs the daily loop and Claude builds and
+   backs it up, both under one rulebook. A no-AI morning check runs in GitHub Actions. A training
+   ledger and three personal models retrain every Sunday.
 
 ## Running it
 
@@ -133,6 +164,7 @@ export GARMIN_TOKENS=...                     # saved Garmin token (see CLAUDE.md
 python sensor_fetch_garmin.py                # morning audit + readiness report
 python sensor_pre_schedule_check.py --type intervals --duration 50 --intensity vo2max
 python core_progress_tracker.py              # writes brain_athlete_history.md
-python -m unittest discover -s tests         # gate tests, no Garmin needed
+python scripts/learn_weekly.py               # retrain the personal models from the ledger, no Garmin needed
+python -m unittest discover -s tests         # gate, ledger and model tests, no Garmin needed
 python core_physiological_engine.py          # engine self-test, no Garmin needed
 ```

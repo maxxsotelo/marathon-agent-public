@@ -28,7 +28,7 @@ import statistics
 from collections import defaultdict
 from datetime import date, timedelta
 
-from core_common import is_hard_or_long, is_run, run_km, today_pht
+from core_common import is_hard_or_long, is_run, merge_notes, merge_split_runs, run_km, today_pht
 from garmin_auth import get_client
 
 HARD_HR_FLOOR_ZONE = 3          # Garmin running zone 3 starts at 176 bpm (Oct 2026)
@@ -52,7 +52,9 @@ def main():
     start = this_monday - timedelta(weeks=12)
     client = get_client()
     acts = client.get_activities_by_date(start.isoformat(), today.isoformat()) or []
-    runs = [a for a in acts if is_run(a)]
+    runs = [a for a in merge_split_runs(acts) if is_run(a)]
+    for note in merge_notes(runs):
+        print(f"[NOTE] {note}")
 
     weeks = defaultdict(lambda: {"km": 0.0, "long": 0.0, "hard": 0, "secs": 0.0, "hard_secs": 0.0})
     for a in runs:

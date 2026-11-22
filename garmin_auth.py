@@ -50,10 +50,12 @@ def _fail(message: str) -> None:
 
 def _decode_token(raw: str) -> str:
     """Return the token as a JSON string, accepting raw JSON or base64 JSON."""
-    raw = raw.strip()
+    # Tolerate copy-paste damage: surrounding quotes, and line breaks or spaces
+    # inside the base64 (phones and secret editors often wrap long strings).
+    raw = raw.strip().strip("'\"").strip()
     if not raw.startswith("{") and not raw.startswith("["):
         try:
-            raw = base64.b64decode(raw, validate=True).decode("utf-8").strip()
+            raw = base64.b64decode("".join(raw.split()), validate=True).decode("utf-8").strip()
         except (binascii.Error, UnicodeDecodeError):
             _fail(f"{TOKEN_ENV_VAR} is neither JSON nor base64-encoded JSON.")
 

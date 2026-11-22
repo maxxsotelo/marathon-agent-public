@@ -1,4 +1,4 @@
-garminconnect>=0.3.0
+garminconnect>=0.3.0,<0.4   # 0.3.x: DI-token login and the workout/calendar API the scripts use; upgrade to 0.4 on purpose, not by surprise
 python-dotenv>=1.0.0
 matplotlib>=3.8.0
 numpy>=1.26.0

@@ -62,6 +62,12 @@ EXERCISES = {
     "face_pull":            {"category": "ROW",             "exerciseName": "FACE_PULL"},
     "db_hammer_curl":       {"category": "CURL",            "exerciseName": "DUMBBELL_HAMMER_CURL"},
     # NOT in the library (Garmin drops the name): any STEP_UP variant under LUNGE.
+    # Validated 2026-10-12 (workout round-trip AND activity-set edit accepted)
+    "hip_thrust_machine":   {"category": "HIP_RAISE",       "exerciseName": "BARBELL_HIP_THRUST_WITH_BENCH"},
+    "hip_thrust_floor":     {"category": "HIP_RAISE",       "exerciseName": "BARBELL_HIP_THRUST_ON_FLOOR"},
+    # NOTE: when EDITING a recorded activity's sets, hanging leg raise must be
+    # LEG_RAISE/HANGING_LEG_RAISE (CRUNCH/HANGING_LEG_RAISE is rejected there,
+    # although workouts accept it).
 
     # Plyometrics
     "box_jump":             {"category": "PLYO",            "exerciseName": "BOX_JUMP"},
@@ -77,7 +83,7 @@ EXERCISES = {
 # Still FAR better than no category at all (the old behavior).
 EXERCISES_CATEGORY_ONLY = {
     # Upper Body
-    "weighted_dip":         {"category": "BENCH_PRESS",     "exerciseName": None},  # DIP category rejected
+    "weighted_dip":         {"category": "TRICEPS_EXTENSION", "exerciseName": "WEIGHTED_DIP"},  # DIP category rejected; was BENCH_PRESS (showed as "Bench press" on the watch, Oct 18)
     "dumbbell_curl":        {"category": "CURL",            "exerciseName": None},
     "skull_crusher":        {"category": "TRICEPS_EXTENSION","exerciseName": None},
 

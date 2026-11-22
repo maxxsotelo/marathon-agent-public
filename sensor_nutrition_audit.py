@@ -18,10 +18,9 @@ import sys
 from collections import defaultdict
 from datetime import date, datetime, timedelta, timezone
 
-from core_common import PHT
+from core_common import LEAN_MASS_KG, PHT
 from garmin_auth import get_client
 
-LEAN_MASS_KG = 60.1   # body-composition scan, Oct 4 2026 (brain_knowledge_base.md section 1b)
 EA_TARGET = 45
 EA_FLAG = 30
 

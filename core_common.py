@@ -20,7 +20,7 @@ from __future__ import annotations
 
 import math
 import statistics
-from datetime import date, datetime, timedelta, timezone
+from datetime import date, datetime, time, timedelta, timezone
 
 PHT = timezone(timedelta(hours=8))
 
@@ -40,9 +40,33 @@ LONG_RUN_KM = 16.0
 LONG_RUN_MIN = 90.0
 HARD_AEROBIC_TE = 3.5
 HARD_ANAEROBIC_TE = 2.0
+# Same-day runs this close together are one session (e.g. outdoor part + treadmill part)
+SPLIT_RUN_GAP_MIN = 90
 
 HR_REST = 40
 HR_MAX = 206
+
+# Body composition: the single source for every script (brain_knowledge_base.md section 1b).
+# Update here, nowhere else. Set your own lean mass and bodyweight.
+LEAN_MASS_KG = 60.0        # Example lean body mass (kg); set your own
+BODY_WEIGHT_KG = 70.0      # Example bodyweight (kg); set your own
+EA_FLOOR, EA_TARGET = 30, 45   # energy availability, kcal per kg lean mass (Rule 7, P30)
+
+
+def kcal_to_reach_ea(eaten_kcal: float, exercise_kcal: float, target: float, lean_kg: float = LEAN_MASS_KG) -> int:
+    """Kcal still to eat today to reach an energy availability `target` (0 if already there).
+    EA = (eaten - exercise) / lean mass, so the gap is target * lean + exercise - eaten."""
+    return max(0, round(target * lean_kg + exercise_kcal - eaten_kcal))
+
+
+def ea_gap_line(eaten_kcal: float, exercise_kcal: float) -> str | None:
+    """One line, e.g. 'To reach EA 30 (floor): +150 kcal; 45 (target): +1,060 kcal', or None at 45+."""
+    to_target = kcal_to_reach_ea(eaten_kcal, exercise_kcal, EA_TARGET)
+    if not to_target:
+        return None
+    to_floor = kcal_to_reach_ea(eaten_kcal, exercise_kcal, EA_FLOOR)
+    floor = f"EA {EA_FLOOR} (floor): +{to_floor:,} kcal; " if to_floor else ""
+    return f"To reach {floor}EA {EA_TARGET} (target): +{to_target:,} kcal (carbs and protein, not a snack)."
 
 
 def now_pht() -> datetime:
@@ -64,6 +88,68 @@ def run_km(act: dict) -> float:
 
 def is_run(act: dict) -> bool:
     return act.get('activityType', {}).get('typeKey') in RUN_TYPE_KEYS
+
+
+def act_end(act: dict) -> datetime:
+    """When an activity ended (PHT); a merged run carries its own '_end'."""
+    return act.get('_end') or parse_local(act['startTimeLocal']) + timedelta(seconds=act.get('duration') or 0)
+
+
+def merge_split_runs(acts: list[dict], gap_min: float = SPLIT_RUN_GAP_MIN) -> list[dict]:
+    """Same-day runs that start within `gap_min` minutes of the previous one ending are
+    merged into one session (distance and time summed, HR time-weighted, highest TE).
+    Other activities pass through unchanged. A merged run carries '_merge_note' (one line
+    to print so the athlete can check the merge) and '_parts'."""
+    runs = sorted((a for a in acts if is_run(a) and a.get('startTimeLocal')), key=lambda a: a['startTimeLocal'])
+    out = [a for a in acts if not (is_run(a) and a.get('startTimeLocal'))]
+    group: list[dict] = []
+
+    def flush():
+        if len(group) == 1:
+            out.append(group[0])
+        elif group:
+            out.append(_merge(group))
+
+    for a in runs:
+        if group and a['startTimeLocal'][:10] == group[-1]['startTimeLocal'][:10] and \
+                (parse_local(a['startTimeLocal']) - act_end(group[-1])).total_seconds() <= gap_min * 60:
+            group.append(a)
+        else:
+            flush()
+            group = [a]
+    flush()
+    return out
+
+
+def _merge(parts: list[dict]) -> dict:
+    m = dict(parts[0])
+    secs = sum(p.get('duration') or 0 for p in parts)
+    hr_secs = [(p.get('averageHR'), p.get('duration') or 0) for p in parts if p.get('averageHR')]
+    m['distance'] = sum(p.get('distance') or 0 for p in parts)
+    m['duration'] = secs
+    m['movingDuration'] = sum(p.get('movingDuration') or p.get('duration') or 0 for p in parts)
+    m['averageHR'] = (sum(h * d for h, d in hr_secs) / sum(d for _, d in hr_secs)) if hr_secs and sum(d for _, d in hr_secs) else None
+    m['maxHR'] = max((p.get('maxHR') or 0 for p in parts), default=None) or None
+    for k in ('aerobicTrainingEffect', 'anaerobicTrainingEffect'):
+        m[k] = max((p.get(k) or 0 for p in parts), default=0) or None
+    for z in range(1, 6):
+        m[f'hrTimeInZone_{z}'] = sum(p.get(f'hrTimeInZone_{z}') or 0 for p in parts)
+    for k in ('elevationGain', 'elevationLoss', 'calories'):
+        m[k] = sum(p.get(k) or 0 for p in parts)
+    m['_mixed'] = len({p.get('activityType', {}).get('typeKey') for p in parts}) > 1
+    m['activityName'] = ' + '.join(p.get('activityName') or '?' for p in parts)
+    m['_end'] = act_end(parts[-1])
+    m['_parts'] = parts
+    gaps = [round((parse_local(b['startTimeLocal']) - act_end(a)).total_seconds() / 60) for a, b in zip(parts, parts[1:])]
+    m['_merge_note'] = (f"Merged split run {parts[0]['startTimeLocal'][:10]}: " +
+                        " + ".join(f"{run_km(p):.2f} km ({p.get('activityName') or '?'})" for p in parts) +
+                        f" = {run_km(m):.2f} km; gap {', '.join(f'{g} min' for g in gaps)} "
+                        f"(rule: same day, gap <= {SPLIT_RUN_GAP_MIN} min)")
+    return m
+
+
+def merge_notes(acts: list[dict]) -> list[str]:
+    return [a['_merge_note'] for a in acts if a.get('_merge_note')]
 
 
 # ── HRV, option B ────────────────────────────────────────────────────────────
@@ -204,16 +290,18 @@ def last_hard_or_long(client, at: datetime, acts: list[dict] | None = None) -> d
     """The most recent hard or long run that ended before `at`, with hours elapsed."""
     acts = acts if acts is not None else activities_window(client, at.date(), days=10)
     best = None
-    for a in acts:
+    for a in merge_split_runs(acts):
         kind = is_hard_or_long(a)
         if not kind or not a.get('startTimeLocal'):
             continue
-        end = parse_local(a['startTimeLocal']) + timedelta(seconds=a.get('duration') or 0)
+        end = act_end(a)
         if end > at:
             continue
         if best is None or end > best["end"]:
             best = {"end": end, "kind": kind, "km": round(run_km(a), 1),
-                    "te": a.get('aerobicTrainingEffect'), "name": a.get('activityName')}
+                    "te": round(a["aerobicTrainingEffect"], 1) if a.get("aerobicTrainingEffect") else None,
+                    "name": a.get("activityName"),
+                    "merge_note": a.get('_merge_note')}
     if best:
         best["hours"] = round((at - best["end"]).total_seconds() / 3600.0, 1)
     return best
@@ -221,14 +309,24 @@ def last_hard_or_long(client, at: datetime, acts: list[dict] | None = None) -> d
 
 # ── Readiness (TRS) and form (FBI) from the Kiat Engine ─────────────────────
 
+def readiness_reference(day: date) -> datetime:
+    """The moment a readiness score is for: now for today, 06:00 PHT on any other day."""
+    now = now_pht()
+    return now if day == now.date() else datetime.combine(day, time(6, 0), tzinfo=PHT)
+
+
 def readiness(client, day: date, acts: list[dict] | None = None) -> dict:
-    """TRS for the morning of `day` and FBI of the last run before it."""
+    """TRS for the morning of `day` (now, if `day` is today) and FBI of the last run before it.
+    Recovery hours and the ACWR window are measured from that moment, not from the wall clock,
+    and activities that started after it are ignored."""
     from core_physiological_engine import (PhysiologicalEngine, parse_sleep_data,
                                            parse_hrv_data, parse_activity_window, parse_laps)
     out = {"trs": None, "fbi": None, "notes": []}
+    ref = readiness_reference(day)
     try:
         acts = acts if acts is not None else activities_window(client, day, days=29)
-        acts = sorted(acts, key=lambda a: a.get('startTimeLocal', ''), reverse=True)
+        acts = sorted((a for a in acts if a.get('startTimeLocal') and parse_local(a['startTimeLocal']) <= ref),
+                      key=lambda a: a['startTimeLocal'], reverse=True)
         sleep = (client.get_sleep_data(day.isoformat()) or {}).get('dailySleepDTO', {})
         hrv = (client.get_hrv_data(day.isoformat()) or {}).get('hrvSummary', {})
         summary = client.get_user_summary(day.isoformat()) or {}
@@ -252,7 +350,8 @@ def readiness(client, day: date, acts: list[dict] | None = None) -> dict:
         report = PhysiologicalEngine().compute(
             sleep=parse_sleep_data(sleep), hrv=parse_hrv_data(hrv), recovery_hours=rec_hours,
             activity_end_time_utc=end_time, rolling_stress_3d=float(stress) if stress else None,
-            activity_window=parse_activity_window(acts), laps=laps or None)
+            activity_window=parse_activity_window(acts), laps=laps or None,
+            now_utc=ref.astimezone(timezone.utc))
         out["trs"] = report.trs_score
         out["fbi"] = report.fbi_score
     except Exception as e:

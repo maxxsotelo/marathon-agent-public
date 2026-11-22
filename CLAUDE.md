@@ -8,11 +8,15 @@ every command you run must finish on its own.
 
 **Running is the priority.** Strength and physique goals fit around it (Rule 10).
 
+## Two agents (Antigravity + Claude)
+- **Antigravity** is the daily and headless marathon agent: daily morning briefing, day-to-day coaching, Garmin scheduling, and nutrition/activity logging. Where this rulebook says "Claude", read "the coach" (Antigravity).
+- **Claude** is reserved for the athlete's day job and is out of the daily loop. It is also the fail-safe: if Antigravity cannot finish a task, the athlete starts a Claude session and Claude follows `docs/CLAUDE_FAILSAFE.md` (runs the task through the Cloud agent workflow; Claude never holds Garmin or MFP credentials). Claude is called only on the athlete's explicit request (monthly or quarterly review, plateau diagnosis, or building bigger systems).
+
 ## Read first (every session)
 | File | What it is |
 |---|---|
 | `brain_session_notes.md` | Open items and the latest handoff. **Update it before the session ends.** |
-| `brain_knowledge_base.md` | The athlete: profile, goals, injuries, gear, the athlete's personal Rules 1–12. |
+| `brain_knowledge_base.md` | The athlete: profile, goals, injuries, gear, the athlete's personal Rules 1–14 (Rule 13: what to do when he goes off-plan; Rule 14: an injury-prevention block). |
 | `brain_current_week_plan.py` | Single source of truth for this week's plan and completed sessions. |
 | `brain_athlete_history.md` | Generated ledger: milestones, current paces, trends, plateaus. |
 | `brain_long_term_roadmap.md` | The phases toward "faster and longer"; no race entered. |
@@ -71,13 +75,24 @@ Print the exact reasoning behind every scheduling decision, covering:
 
 ### 6. After every run
 When the athlete reports a run ("just got back", "analyse my run"), run
-`python core_run_analysis.py [YYYY-MM-DD]` and base the analysis on its full output, never on
-a summary-level call. If the run hasn't synced, say so and wait.
+`python core_run_analysis.py [YYYY-MM-DD] [ACTIVITY_ID]`. It writes the long report to `scratch/` and
+prints the **run card** (`core_run_card.py`) at the end. **Show the run card to the athlete in full**
+(summary, conditions, terrain, km splits, fast segments, efficiency), then add your read of it.
+Never replace it with a summary, never re-derive its numbers by hand or from memory, and don't
+paste the long report (it costs tokens; read sections only when a question needs them). The card
+is deterministic, so any model gives the athlete the same numbers. Speeds flagged "GPS?" have cadence too
+low for that speed: say so. If the run hasn't synced, say so and wait.
 
 ### 7. Progress questions
 "Am I improving", "audit", "progress check": run `core_progress_tracker.py`, then
 `core_block_auditor.py`, and answer with the tracker's verdicts (improving / plateau /
 declining) and the playbook fix for any flagged plateau.
+
+---
+
+## Logging food (any model, any device)
+Meals reach MyFitnessPal only through the **Log food** workflow: see `docs/LOG_FOOD.md`. Never log by another route, never log twice,
+and report the totals and EA the run prints. Wrong grams or a duplicate: `scripts/edit_food.py` (same doc), never a re-log.
 
 ---
 
@@ -94,8 +109,12 @@ declining) and the playbook fix for any flagged plateau.
   easy sessions still clear.
 - **Hours since the last hard or long run** (long = 16 km+ or 90 min+; hard = aerobic TE 3.5+
   or anaerobic TE 2.0+): hard or marathon-pace session under 24 h → blocked.
+  **Split runs:** same-day runs that start within 90 min of the previous one ending (e.g. outdoor
+  part + treadmill part) count as one run here, in the planning checks, the tracker's distance
+  records and the block auditor (`merge_split_runs` in `core_common.py`). Every merge is printed as a
+  `Merged split run ...` note: show it to the athlete so he can check it.
 - **Heavy legs within 72 h before a planned long run** (week plan or Garmin calendar) → blocked.
-- **Readiness (TRS) below 50** → Zone 2 cap.
+- **Readiness (TRS) below 50** → Zone 2 cap. **TRS unreadable** (today) → hard and marathon-pace blocked; easy warned.
 - Warnings only: FBI (form) below 70 on the last outdoor run (shorten, add mobility; FBI is
   not pace-corrected); more than 12 hard sets per muscle in 7 days; no lifting-free day in 7;
   Rule 11 weekly HRV trend flag.
@@ -129,7 +148,10 @@ They are re-checked on the morning of the session (daily routine). Plan the week
     sets, 1:15 isolation/prehab).
   - Treadmill: time-based steps with belt speeds in the notes (the watch under-reads treadmill
     distance). Cardio on the Forerunner 165: sport `cardio`, CARDIO steps.
+  - Surges and strides (interval steps up to 2 min or 400 m) get no HR target: HR lags 30–60 s, so
+    the watch would beep "too low" and push the pace up. The uploader moves the range into the note.
 - Run `core_strength_progression.py --day <push|pull|legs|core>` before building a lifting day.
+- **Forerunner 165 storage limit (the athlete, Nov 21, 2026):** The watch has very little workout storage. After workouts are completed/logged—or whenever scheduling new ones—run `python scripts/garmin_schedule.py --prune-completed` to delete past/completed coach workouts (`W##...`) from Garmin Connect so new workouts sync cleanly.
 - Never write one-off upload scripts; extend the uploader instead.
 
 ---
@@ -144,6 +166,13 @@ They are re-checked on the morning of the session (daily routine). Plan the week
   `.gitignore` excludes `.garminconnect`; keep it that way.
 - Don't email the athlete unless he asks.
 
+## No-AI morning check (GitHub Actions, 7:15 am PHT)
+`.github/workflows/morning_check.yml` runs `ci_morning_check.py` every day: readiness, the gate for
+today's planned sessions, yesterday's activities and run analysis, nutrition, token age. It posts
+the report as a GitHub issue (label `morning-check`) and commits it to `reports/morning/`. It only
+reports; it never changes the Garmin calendar. Read the latest report before advising the athlete. It also adds yesterday to
+the training ledger and, on Sundays, retrains the personal models (see "Learning loop" below).
+
 ## Daily morning routine (headless, 7:00 am PHT): downgrade only
 1. `python sensor_fetch_garmin.py`, `python core_tolerance_engine.py`,
    `python core_run_analysis.py` (yesterday), `python sensor_nutrition_audit.py 1`.
@@ -152,12 +181,27 @@ They are re-checked on the morning of the session (daily routine). Plan the week
    calendar and schedule the easy alternative (easy run of similar duration, or easy cardio),
    and say why. You may only make the day easier. **Never** add sessions, add intensity,
    act on a CONSULT (report it for the athlete) or use `--consult-approved`.
-4. Sundays: `core_progress_tracker.py` and `core_plan_checks.py`; commit the history file.
+4. Sundays: `core_progress_tracker.py` and `core_plan_checks.py`; commit the history file. If the tracker prints
+   `[DATA GAP]`, report it (it keeps the last known values; never fill a gap by hand). Ask the athlete the weekly check-in
+   (`scripts/checkin.py`).
 5. Token check: report the token's age; remind Max 3 days before the planned renewal date in
    the session notes (every 4 weeks from creation until the real lifetime is known).
 6. Notify the athlete (short, phone-readable): HRV verdict, today's session cleared/downgraded/
    consult, yesterday's run in 3 lines, any energy-availability flag, token reminder if due.
 7. Update `brain_session_notes.md` and `brain_current_week_plan.py`; commit and push.
+
+
+## Learning loop (personal models)
+The build learns from the athlete's own data with small, explainable models (numpy; every number says how sure it is):
+- **Ledger** (`scripts/ledger.py`, `data/ledger/`): every activity with his Garmin post-run rating (RPE, feel), daily
+  vitals, and plan vs actual. The morning check adds yesterday; `--backfill --since D` fills history (Cloud agent).
+- **Sundays**, `scripts/learn_weekly.py` (ledger only, no login) retrains: **efficiency** (what heat and hills cost him,
+  heat-corrected fitness trend; `data/models/efficiency.json`, shown on the run card as "x % vs expected for these
+  conditions"), **pace bands** (`data/pace_bands.json`: secondary to HR, at most 5 s/km a week, only for zones his recent
+  runs reach; older than 14 days = HR only) and **habits** (planning advice). Report: `reports/models/<date>.md`.
+- Read the latest model report when planning the week. Models describe and suggest: they never change a gate, a hard
+  limit or the athlete's rules, and never fit the plan to a habit the deep review flagged (overruns, extra runs): the plan stays
+  the ceiling (P41).
 
 ---
 
@@ -170,8 +214,9 @@ Scripts authenticate from a saved token, not a password, so no MFA prompt can ap
   environment variables). A new session picks up changes.
 - **Lifetime:** the access token lasts ~18 h and renews itself; the refresh token's lifetime
   is unpublished. The cloud can't save a renewed token, so the original ages. **Planned
-  renewal every 4 weeks**; current token created 2026-10-07, next renewal weekend of
-  2026-10-31 – 11-01 (see RESEARCH_LOG.md, 2026-10-11).
+  renewal every 4 weeks.** The current dates are the repository variables `GARMIN_TOKEN_CREATED`
+  and `GARMIN_TOKEN_RENEW_BY` (the morning check reads them; on 2026-11-15: created 2026-10-31,
+  renew by 2026-11-28). Update both when the token is renewed (see RESEARCH_LOG.md, 2026-10-11).
 
 **Creating or renewing the token (the athlete, on a PC):** requires `garminconnect>=0.3`.
 ```bash
@@ -185,13 +230,13 @@ Paste the printed base64 string into `GARMIN_TOKENS`.
 | Variable | Used by | Required |
 |---|---|---|
 | `GARMIN_TOKENS` | every Garmin script (via `garmin_auth.py`) | yes |
-| `GARMIN_EMAIL` | `actuator_send_report_email.py` (Gmail sender) | for email only |
+| `GARMIN_EMAIL` | `actuator_send_report_email.py` (Gmail sender; `--report PATH`, default the newest morning check) | for email only |
 | `GMAIL_APP_PASSWORD` | `actuator_send_report_email.py` | for email only |
 
 ---
 
 ## Running the pipeline
-Setup (fresh container): `pip install -r requirements.txt`. Tests: `python -m unittest discover -s tests`.
+Setup (fresh container, or a machine that installed packages long ago): `pip install -U -r requirements.txt`. Tests: `python -m unittest discover -s tests`.
 
 **Daily:** the morning routine above. When the athlete asks for a session:
 1. `python sensor_fetch_garmin.py` (vitals, sleep, HRV, 29 days of activities, last-run laps, Kiat report).
@@ -205,9 +250,18 @@ Setup (fresh container): `pip install -r requirements.txt`. Tests: `python -m un
 6. Upload with the generator or the session uploader.
 7. Update `brain_current_week_plan.py`, commit and push.
 
-**Weekly (Sunday planning):** ask whether the athlete is going home to the home town before planning Thu–Sun.
+**Weekly (Sunday planning):** default location: the work city Mon–Wed; **Thursday = work, then home to the home town: always an easy or rest day**;
+The home town until Sunday afternoon (the athlete, Oct 17, 2026). Don't ask each week; plan for that unless he says otherwise.
+Zones: Z2 (162–174) is the default for non-recovery aerobic runs (KB Rule 9); never cap easy or long runs below 162 bpm.
 Run `core_plan_checks.py --long-run KM --week-km KM --hard N` and the tracker; raise
-foreseeable consults; write the week into `brain_current_week_plan.py`.
+foreseeable consults; write the week into `brain_current_week_plan.py`, giving each day a
+`"gates"` list (type, duration, intensity, mp_minutes, label) so the no-AI morning check gates it exactly.
+The athlete overdoes rather than skips (P41, `reviews/2026-11-deep/`), so: **the plan is the ceiling**: every key session
+states its bonus cap in its label or step notes (e.g. "bonus: +2 surges max, only if HR is back under 165"), and
+anything beyond the cap is logged as over-plan in the session notes. **PR attempts go into benchmarks** (a 5K time
+trial or a race every 4-6 weeks); long runs stay surge-and-float with HR-capped floats (P36). **Weekly check-in:** ask
+The athlete two numbers (enjoyment and life stress, 1-10) and record them with `python scripts/checkin.py --enjoyment N --stress N`;
+enjoyment under 5 two weeks running means less structure and km, before any new programming.
 
 **Monthly (block planning):** the review in `brain_long_term_roadmap.md`.
 
@@ -215,10 +269,20 @@ foreseeable consults; write the week into `brain_current_week_plan.py`.
 macros by hand in `brain_nutrition_log.md`, Rule 12), `core_block_auditor.py` (3-week block
 audit), `core_strength_progression.py` (best sets, e1RM, next targets, weekly hard sets),
 `actuator_biometrics_trend.py` (30-day chart), `sensor_audit_14d.py`, `core_sleep_analysis.py`.
+`core_shoe_rotation.py --run <easy|recovery|long|quality> [--minutes N] [--km N] [--mp] [--treadmill] --at LOCATION`
+(the athlete's shoe rules, `brain_shoes.json`; no mileage, the athlete tracks it on Strava). Name the shoe in every scheduled run.
 `python core_physiological_engine.py` runs the Kiat Engine self-test (no Garmin login).
+**Yearbook** (`reports/yearbook/README.md`): `python scripts/detect_breakthrough.py [--week-plan PATH]` checks the
+Breakthrough Week triggers from repo files (QUALIFIES / CANDIDATE / NORMAL WEEK; it also runs in the Sunday morning check);
+`python scripts/build_achievement_pdf.py --mode breakthrough|monthly ...` builds the PDF. The PDF states only what the data or
+the issue spec says (Rule 1): put a week's narrative in its spec JSON, never in the builder.
+**Deep review** (`docs/DEEP_REVIEW.md`, any model): `python scripts/telemetry_review.py` writes the full telemetry and history
+rundown (no Garmin login) to `reviews/<YYYY-MM>-deep/packet/`; each model reviews it independently, then they critique each other.
+**Training Ledger dashboard** (`docs/DASHBOARD.md`): the athlete's interactive claude.ai dashboard (load, recovery, fuel, progress,
+milestones, lifts). `python scripts/export_dashboard.py [--garmin-days N]` writes `data/dashboard/*.csv` (the morning check
+runs it with Garmin); only Claude syncs those files to the dashboard, when the athlete asks (procedure in the doc).
 
 ### Known gaps
-- `actuator_send_report_email.py` reads its report from a hard-coded Windows path.
 - `cloud_runner.py` and `marathon_cloud_runner.ipynb` are legacy Colab entry points.
 - Scripts in `scratch/` are one-off analyses with the old interactive login: don't run them
   headless; switch one to `garmin_auth.get_client()` first if needed.

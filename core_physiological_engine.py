@@ -41,9 +41,10 @@ LTHR_LOW_BPM        = 190     # Lactate Threshold HR lower bound
 LTHR_HIGH_BPM       = 196     # Lactate Threshold HR upper bound
 MAX_HR_BPM          = 206     # Verified Max HR
 HR_REST_BPM         = 40      # Resting HR (midpoint of 39-42 bpm baseline)
-ATHLETE_WEIGHT_KG   = 70.0    # Example bodyweight (kg); set your own
 
-from core_common import RUN_TYPE_KEYS  # noqa: E402  (single definition, re-exported)
+from core_common import BODY_WEIGHT_KG, RUN_TYPE_KEYS  # noqa: E402  (single definitions, re-exported)
+
+ATHLETE_WEIGHT_KG   = BODY_WEIGHT_KG  # bodyweight for W/kg: set in core_common.py
 
 # ACWR Safety Thresholds
 ACWR_SWEET_LOW      = 0.8
@@ -208,11 +209,15 @@ class PhysiologicalEngine:
         rolling_stress_3d: Optional[float],
         activity_window: ActivityWindow,
         laps: Optional[list[LapKinematics]] = None,
+        now_utc: Optional[datetime] = None,
     ) -> PhysiologicalReport:
+        """now_utc: the moment the report is for (default: the wall clock). Pass it when scoring a
+        day other than right now, so recovery time and the ACWR window are measured from that day."""
         report = PhysiologicalReport()
+        now_utc = now_utc or datetime.now(timezone.utc)
 
         # ── 1. ACWR (computed first — feeds TRS load score) ──────────────────
-        acwr, acute_km, chronic_weekly_km = self._compute_acwr(activity_window)
+        acwr, acute_km, chronic_weekly_km = self._compute_acwr(activity_window, now_utc=now_utc)
         report.acwr              = round(acwr, 3)
         report.acute_km          = round(acute_km, 2)
         report.chronic_km_weekly = round(chronic_weekly_km, 2)
@@ -221,7 +226,7 @@ class PhysiologicalEngine:
 
         # ── 2. TRAINING READINESS SCORE ──────────────────────────────────────
         s_sleep  = self._score_sleep(sleep)
-        s_rec    = self._score_recovery(recovery_hours, activity_end_time_utc)
+        s_rec    = self._score_recovery(recovery_hours, activity_end_time_utc, now_utc=now_utc)
         s_hrv    = self._score_hrv(hrv)
         s_load   = self._score_load(acwr)
         s_stress = self._score_stress(rolling_stress_3d)
@@ -393,10 +398,11 @@ class PhysiologicalEngine:
     def _score_recovery(
         recovery_hours: Optional[float],
         activity_end_time_utc: Optional[datetime],
+        now_utc: Optional[datetime] = None,
     ) -> float:
         """
-        Model current remaining recovery as a linear decay from the last
-        activity's end time. 0 remaining hours = full score (100),
+        Model remaining recovery at `now_utc` (default: the wall clock) as a linear decay
+        from the last activity's end time. 0 remaining hours = full score (100),
         48+ remaining hours = score 0.
         """
         if recovery_hours is None or recovery_hours <= 0:
@@ -405,7 +411,7 @@ class PhysiologicalEngine:
         if activity_end_time_utc is None:
             remaining = recovery_hours / 2.0
         else:
-            now_utc = datetime.now(timezone.utc)
+            now_utc = now_utc or datetime.now(timezone.utc)
             elapsed_hours = (now_utc - activity_end_time_utc).total_seconds() / 3600.0
             remaining = max(0.0, recovery_hours - elapsed_hours)
 
@@ -472,12 +478,12 @@ class PhysiologicalEngine:
     # ── ACWR ─────────────────────────────────────────────────────────────────
 
     @staticmethod
-    def _compute_acwr(window: ActivityWindow) -> tuple[float, float, float]:
+    def _compute_acwr(window: ActivityWindow, now_utc: Optional[datetime] = None) -> tuple[float, float, float]:
         """
-        Compute ACWR from rolling activity data.
-        Returns (acwr, acute_km, chronic_weekly_km).
+        Compute ACWR from rolling activity data, for the 7 and 28 days before `now_utc`
+        (default: the wall clock). Returns (acwr, acute_km, chronic_weekly_km).
         """
-        now_utc = datetime.now(timezone.utc)
+        now_utc = now_utc or datetime.now(timezone.utc)
         cutoff_7d  = now_utc - timedelta(days=7)
         cutoff_28d = now_utc - timedelta(days=28)
 
@@ -485,7 +491,7 @@ class PhysiologicalEngine:
             r for r in window.runs
             if r.get('activity_type') in RUN_TYPE_KEYS
             and r.get('date') is not None
-            and r['date'] >= cutoff_28d
+            and cutoff_28d <= r['date'] <= now_utc   # nothing after the reference moment
         ]
 
         acute_km  = sum(
@@ -1054,8 +1060,6 @@ def parse_laps(lap_dtos: list[dict]) -> list[LapKinematics]:
 # ─────────────────────────────────────────────────────────────────────────────
 
 if __name__ == "__main__":
-    from datetime import timezone
-
     engine = PhysiologicalEngine()
 
     # Simulate a healthy, well-recovered athlete

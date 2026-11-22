@@ -35,6 +35,7 @@ RECENT_DAYS = 45   # default view: exercises done in this window (--all shows ev
 # Sessions whose logged weights are known to be wrong; left out of bests and targets.
 BAD_SESSIONS = {
     ("DUMBBELL_BENCH_PRESS", "2026-07-27"): "logged in lb as pair totals (real: ~41 kg/hand x4)",
+    ("BARBELL_BENCH_PRESS", "2026-08-31"): "logged in lb (100-120 'kg' = ~45-54 kg); the athlete has never benched 140 kg (Oct 18)",
 }
 
 # Rep ranges from Rule 10: main lifts 3-6, accessories 6-12, prehab/isolation higher.

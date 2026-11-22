@@ -32,7 +32,7 @@ import statistics
 from collections import defaultdict
 from datetime import date, timedelta
 
-from core_common import is_run, run_km, today_pht
+from core_common import is_run, merge_notes, merge_split_runs, run_km, today_pht
 from garmin_auth import get_client
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -105,6 +105,128 @@ def week_of(d):
     return d - timedelta(days=d.weekday())
 
 
+# Daily metrics that come from separate Garmin endpoints. If one of them cannot be read, the
+# history file keeps the last known monthly values and says so, instead of silently writing "--".
+GAP_COLUMNS = {"vo2max": "VO2max", "hrv": "HRV", "rhr": "RHR", "weight": "Weight"}
+CHUNK_DAYS = 180
+
+
+def current_week_is_complete(today, sunday_session_done):
+    """Weeks run Monday-Sunday. The current week counts as complete only on Sunday once Sunday's
+    session is done: the Sunday morning check runs at 7 am, before a Sunday long run."""
+    return today.weekday() == 6 and bool(sunday_session_done)
+
+
+def sunday_session_done(today, runs, plan=None):
+    """Is today's running done? True when a run is already logged today, or the week plan has no
+    run today (or marks the day completed). Without a plan, only a logged run counts."""
+    if any(a["_date"] == today for a in runs):
+        return True
+    entry = ((plan or {}).get("days") or {}).get(today.isoformat())
+    if entry is None:
+        return False
+    return bool(entry.get("completed")) or float(entry.get("run_km") or 0) == 0
+
+
+def load_week_plan():
+    try:
+        from brain_current_week_plan import plan
+        return plan
+    except Exception as e:   # the tracker still runs without a plan
+        print(f"[WARN] Could not load brain_current_week_plan.py: {e}")
+        return None
+
+
+def fetch_daily_metrics(c, start, today):
+    """Daily VO2max, HRV, resting HR and weight since `start`.
+
+    Returns (daily, gaps): daily = {metric: {iso_date: value}}; gaps = {metric: reason} for
+    every metric Garmin gave nothing for (an error, or an empty answer)."""
+    daily, errors = {}, {}
+
+    def put(key, d, v):
+        if d and v:
+            daily.setdefault(key, {})[d] = v
+
+    def attempt(key, fn):
+        try:
+            fn()
+        except Exception as e:   # one failed endpoint must not take the others down
+            errors[key] = f"{type(e).__name__}: {e}"[:160]
+
+    def vo2(s, e):
+        for m in c.get_max_metrics_range(s.isoformat(), e.isoformat()) or []:
+            g = (m or {}).get("generic") or {}
+            put("vo2max", g.get("calendarDate"), g.get("vo2MaxPreciseValue"))
+
+    def hrv(s, e):
+        for h in (c.get_hrv_data_range(s.isoformat(), e.isoformat()) or {}).get("hrvSummaries") or []:
+            put("hrv", h.get("calendarDate"), h.get("lastNightAvg"))
+
+    def rhr(s, e):
+        for r in c.get_rhr_daily(s.isoformat(), e.isoformat()) or []:
+            put("rhr", r.get("calendarDate"), r.get("value"))
+
+    def weight():
+        for w in (c.get_weigh_ins(start.isoformat(), today.isoformat()) or {}).get("dailyWeightSummaries") or []:
+            lw = (w.get("latestWeight") or {}).get("weight")
+            put("weight", w.get("summaryDate"), lw / 1000 if lw else None)
+
+    for offset in range(0, (today - start).days + 1, CHUNK_DAYS):   # 6-month chunks
+        s = start + timedelta(days=offset)
+        e = min(today, s + timedelta(days=CHUNK_DAYS - 1))
+        attempt("vo2max", lambda: vo2(s, e))
+        attempt("hrv", lambda: hrv(s, e))
+        attempt("rhr", lambda: rhr(s, e))
+    attempt("weight", weight)
+    if not daily.get("vo2max"):   # range endpoint gave nothing: at least read the current value
+        def vo2_today():
+            for m in c.get_max_metrics(today.isoformat()) or []:
+                g = (m or {}).get("generic") or {}
+                put("vo2max", g.get("calendarDate"), g.get("vo2MaxPreciseValue"))
+        attempt("vo2max", vo2_today)
+
+    gaps = {}
+    for key in GAP_COLUMNS:
+        if not daily.get(key):
+            gaps[key] = errors.get(key, "Garmin returned no data")
+        elif key in errors:
+            gaps[key] = f"partly missing ({errors[key]})"
+    return daily, gaps
+
+
+def previous_history(path):
+    """Last-known values from the existing history file, used to fill a data gap.
+
+    Returns {"generated": 'YYYY-MM-DD' or '', "monthly": {month: {column: cell}}, "vo2max_line": str}."""
+    out = {"generated": "", "monthly": {}, "vo2max_line": ""}
+    try:
+        with open(path, encoding="utf-8") as f:
+            lines = f.read().splitlines()
+    except OSError:
+        return out
+    for i, line in enumerate(lines):
+        if line.startswith("# Athlete History (generated "):
+            out["generated"] = line[len("# Athlete History (generated "):][:10]
+        elif line.startswith("- **VO2max:**"):
+            out["vo2max_line"] = line.split(" (last known", 1)[0]
+        elif line.startswith("| Month |"):
+            cols = [x.strip() for x in line.strip().strip("|").split("|")]
+            for row in lines[i + 2:]:
+                if not row.startswith("|"):
+                    break
+                cells = [x.strip() for x in row.strip().strip("|").split("|")]
+                out["monthly"][cells[0]] = dict(zip(cols, cells))
+    return out
+
+
+def fill_gap(cell, month, key, gaps, prev):
+    """A monthly cell: the fresh value, or the last known one when this metric has a gap today."""
+    if cell != "--" or key not in gaps:
+        return cell
+    return (prev.get("monthly", {}).get(month) or {}).get(GAP_COLUMNS[key]) or "--"
+
+
 def main():
     ap = argparse.ArgumentParser(description="Progress tracker")
     ap.add_argument("--no-strength", action="store_true", help="skip lift e1RM (faster)")
@@ -119,6 +241,13 @@ def main():
         a["_date"] = date.fromisoformat(a["startTimeLocal"][:10])
         a["_km"] = run_km(a)
         a["_outdoor"] = a.get("activityType", {}).get("typeKey") != "treadmill_running"
+    # Distance records count a split run (e.g. outdoor + treadmill parts) as one run;
+    # pace and efficiency trends keep the parts separate (outdoor vs treadmill).
+    sessions = sorted([a for a in merge_split_runs(acts) if is_run(a)], key=lambda a: a["startTimeLocal"])
+    for a in sessions:
+        a["_date"] = date.fromisoformat(a["startTimeLocal"][:10])
+        a["_km"] = run_km(a)
+        a["_outdoor"] = a.get("activityType", {}).get("typeKey") != "treadmill_running"
     L = []
 
     # ── 1. Ledger ──────────────────────────────────────────────────────────
@@ -126,11 +255,12 @@ def main():
     L.append("Read this before calling any run a milestone, setting a pace, or judging progress. "
              "Source: Garmin, since " + (runs[0]["startTimeLocal"][:10] if runs else "n/a") + ".\n")
     L.append("## 1. Milestone ledger\n")
-    L.append(f"{len(runs)} runs, {sum(a['_km'] for a in runs):,.0f} km in total.\n")
+    L.append(f"{len(sessions)} runs, {sum(a['_km'] for a in sessions):,.0f} km in total "
+             f"(same-day runs <= 90 min apart count as one run).\n")
     L.append("| Distance | Runs | First | Most recent | Longest |")
     L.append("|---|---|---|---|---|")
     for km, label in BANDS:
-        band = [a for a in runs if a["_km"] >= km - 0.05]
+        band = [a for a in sessions if a["_km"] >= km - 0.05]
         if band:
             longest = max(band, key=lambda a: a["_km"])
             L.append(f"| {label} | {len(band)} | {band[0]['_date']} | {band[-1]['_date']} | "
@@ -140,11 +270,16 @@ def main():
     L.append("\n**Longest runs:**\n")
     L.append("| Date | km | Time | Pace | Avg HR | Where |")
     L.append("|---|---|---|---|---|---|")
-    for a in sorted(runs, key=lambda a: -a["_km"])[:10]:
+    for a in sorted(sessions, key=lambda a: -a["_km"])[:10]:
         d = a.get("duration") or 0
+        hr = a.get('averageHR')
+        where = "outdoor + treadmill" if a.get("_mixed") else "outdoor" if a['_outdoor'] else "treadmill"
         L.append(f"| {a['_date']} | {a['_km']:.2f} | {int(d // 3600)}:{int(d % 3600 // 60):02d} | "
-                 f"{fmt_pace(d / a['_km'])} | {a.get('averageHR') or '--'} | "
-                 f"{'outdoor' if a['_outdoor'] else 'treadmill'} |")
+                 f"{fmt_pace(d / a['_km'])} | {round(hr) if hr else '--'} | {where} |")
+    notes = merge_notes(sessions)
+    if notes:
+        L.append("\n**Merged split runs (check these):**\n")
+        L += [f"- {n}" for n in notes]
     try:
         prs = c.get_personal_record() or []
         rows = []
@@ -172,12 +307,12 @@ def main():
         L.append(f"\n**Garmin race predictions ({rp.get('calendarDate', today)}):** 5K {t(rp.get('time5K'))}, "
                  f"10K {t(rp.get('time10K'))}, half {t(rp.get('timeHalfMarathon'))}, "
                  f"marathon {t(rp.get('timeMarathon'))}.")
-    except Exception:
-        pass
+    except Exception as e:
+        L.append(f"\n(Garmin race predictions unavailable: {e})")
 
     # ── 2. Capacity vs readiness ───────────────────────────────────────────
-    life = max(runs, key=lambda a: a["_km"]) if runs else None
-    recent = [a for a in runs if a["_date"] >= today - timedelta(days=30)]
+    life = max(sessions, key=lambda a: a["_km"]) if sessions else None
+    recent = [a for a in sessions if a["_date"] >= today - timedelta(days=30)]
     r30 = max(recent, key=lambda a: a["_km"]) if recent else None
     L.append("\n## 2. Capacity vs. current readiness\n")
     if life:
@@ -201,36 +336,12 @@ def main():
             weekly[w]["cadence"].append(cad)
         if is_time_trial(a):
             weekly[w]["tt"].append((a.get("duration") or 0) / a["_km"] * 5)
-    daily = {}
-    try:
-        for m in c.get_max_metrics_range(HISTORY_START.isoformat(), today.isoformat()) or []:
-            g = (m or {}).get("generic") or {}
-            if g.get("vo2MaxPreciseValue"):
-                daily.setdefault("vo2max", {})[g["calendarDate"]] = g["vo2MaxPreciseValue"]
-    except Exception:
-        pass
-    for start in range(0, (today - HISTORY_START).days + 1, 180):   # HRV/RHR in 6-month chunks
-        s = HISTORY_START + timedelta(days=start)
-        e = min(today, s + timedelta(days=179))
-        try:
-            for h in (c.get_hrv_data_range(s.isoformat(), e.isoformat()) or {}).get("hrvSummaries") or []:
-                if h.get("lastNightAvg"):
-                    daily.setdefault("hrv", {})[h["calendarDate"]] = h["lastNightAvg"]
-        except Exception:
-            pass
-        try:
-            for r in c.get_rhr_daily(s.isoformat(), e.isoformat()) or []:
-                if r.get("value"):
-                    daily.setdefault("rhr", {})[r["calendarDate"]] = r["value"]
-        except Exception:
-            pass
-    try:
-        for wsum in (c.get_weigh_ins(HISTORY_START.isoformat(), today.isoformat()) or {}).get("dailyWeightSummaries") or []:
-            lw = (wsum.get("latestWeight") or {}).get("weight")
-            if lw:
-                daily.setdefault("weight", {})[wsum["summaryDate"]] = lw / 1000
-    except Exception:
-        pass
+    for a in sessions:   # longest run per week counts a split run as one
+        weekly[week_of(a["_date"])]["long"].append(a["_km"])
+    prev = previous_history(OUT_MD)   # read before this run overwrites the file
+    daily, gaps = fetch_daily_metrics(c, HISTORY_START, today)
+    for key, reason in gaps.items():
+        print(f"[DATA GAP] {GAP_COLUMNS[key]}: {reason}")
     for key, series in daily.items():
         for d, v in series.items():
             weekly[week_of(date.fromisoformat(d))][key].append(v)
@@ -257,8 +368,10 @@ def main():
         return statistics.mean(v)
 
     # ── 3. Current fitness ─────────────────────────────────────────────────
-    # Weeks run Monday-Sunday; on Sunday the current week counts as complete.
-    next_week = week_of(today) + timedelta(weeks=1) if today.weekday() == 6 else week_of(today)
+    # Weeks run Monday-Sunday; the current week counts as complete only once Sunday's session is done.
+    week_done = current_week_is_complete(today, today.weekday() == 6 and
+                                         sunday_session_done(today, runs, load_week_plan()))
+    next_week = week_of(today) + timedelta(weeks=1) if week_done else week_of(today)
     last4 = [next_week - timedelta(weeks=i) for i in range(4)]
     last12 = [next_week - timedelta(weeks=i) for i in range(12)]
     def window_mean(key, weeks_):
@@ -268,7 +381,7 @@ def main():
     L.append(f"- **Pace at {REF_HR} bpm, outdoor:** {fmt_pace(ef_to_pace(window_mean('ef_outdoor', last4)))}/km"
              f" | treadmill: {fmt_pace(ef_to_pace(window_mean('ef_treadmill', last4)))}/km "
              "(easy runs; use these for easy-pace targets).")
-    longs = [a for a in runs if a["_date"] >= today - timedelta(days=28) and a["_km"] >= 16]
+    longs = [a for a in sessions if a["_date"] >= today - timedelta(days=28) and a["_km"] >= 16]
     if longs:
         lp = statistics.mean((a.get("duration") or 0) / a["_km"] for a in longs)
         lh = statistics.mean(a.get("averageHR") or 0 for a in longs)
@@ -281,6 +394,10 @@ def main():
     if daily.get("vo2max"):
         d, v = max(daily["vo2max"].items())
         L.append(f"- **VO2max:** {v:.1f} ({d}).")
+    elif prev["vo2max_line"]:
+        L.append(f"{prev['vo2max_line']} (last known: Garmin gave no VO2max on {today}).")
+    else:
+        L.append(f"- **VO2max:** unavailable (Garmin gave no VO2max on {today}).")
 
     # ── 4. Monthly trends ──────────────────────────────────────────────────
     L.append("\n## 4. Monthly trends\n")
@@ -289,7 +406,7 @@ def main():
     months = sorted({(a["_date"].year, a["_date"].month) for a in runs})
     for y, m in months[-13:]:
         mweeks = [w for w in weekly if w.year == y and w.month == m]
-        mruns = [a for a in runs if a["_date"].year == y and a["_date"].month == m]
+        mruns = [a for a in sessions if a["_date"].year == y and a["_date"].month == m]
         days_in = 31 if m == 12 else (date(y, m + 1, 1) - date(y, m, 1)).days
         if (y, m) == (today.year, today.month):
             days_in = today.day   # current month so far
@@ -300,11 +417,19 @@ def main():
         tts = [x for w in mweeks for x in (weekly[w].get("tt") or [])]
         def f1(v, fmt="{:.1f}"):
             return fmt.format(v) if v else "--"
-        L.append(f"| {y}-{m:02d} | {kmw:.1f} | {max((a['_km'] for a in mruns), default=0):.1f} | "
+        mo = f"{y}-{m:02d}"
+        def gap(key, cell):
+            return fill_gap(cell, mo, key, gaps, prev)
+        L.append(f"| {mo} | {kmw:.1f} | {max((a['_km'] for a in mruns), default=0):.1f} | "
                  f"{fmt_pace(ef_to_pace(mm('ef_outdoor')))} | {fmt_pace(ef_to_pace(mm('ef_treadmill')))} | "
-                 f"{f1(mm('vo2max'))} | {f1(mm('hrv'), '{:.0f}')} | {f1(mm('rhr'), '{:.0f}')} | "
-                 f"{f1(mm('weight'))} | {f1(mm('cadence'), '{:.0f}')} | "
+                 f"{gap('vo2max', f1(mm('vo2max')))} | {gap('hrv', f1(mm('hrv'), '{:.0f}'))} | "
+                 f"{gap('rhr', f1(mm('rhr'), '{:.0f}'))} | "
+                 f"{gap('weight', f1(mm('weight')))} | {f1(mm('cadence'), '{:.0f}')} | "
                  f"{fmt_pace(min(tts) / 5) + '/km' if tts else '--'} |")
+    if gaps:
+        L.append(f"\n**Data gaps on {today}:** " + "; ".join(f"{GAP_COLUMNS[k]} ({r})" for k, r in gaps.items()) +
+                 f". Empty cells in these columns show the last known values (history file of "
+                 f"{prev['generated'] or 'n/a'}); their plateau rows below may read \"not enough data\".")
     if lifts:
         L.append("\n**Main lifts, best estimated 1RM per month (kg, sets of 10 reps or fewer):**\n")
         lmonths = sorted({d[:7] for s in lifts.values() for d in s})[-8:]
@@ -363,8 +488,8 @@ def main():
             bv = [wk_value(w, "km") or 0 for w in recent6]
             show = lambda v: f"{v:.1f} km"
         elif key == "long_run":
-            av = [max(weekly[w].get("km") or [0]) for w in prior6]
-            bv = [max(weekly[w].get("km") or [0]) for w in recent6]
+            av = [max(weekly[w].get("long") or [0]) for w in prior6]
+            bv = [max(weekly[w].get("long") or [0]) for w in recent6]
             show = lambda v: f"{v:.1f} km"
         else:
             av = [x for w in prior6 for x in (weekly[w].get(src) or [])]
